@@ -12,6 +12,10 @@
 #include <arpa/inet.h>
 #include <unistd.h>
 
+// new headers for non-blocking I/O and epoll
+#include <fcntl.h>
+#include <sys/epoll.h>
+
 
 /*
     making a socket networking code which will open a TCP connection using sockets, listens to a port and an IP, accepts the connection and responds to the connection.
@@ -34,6 +38,24 @@
 
 
 // one thread to serve one client, will continuously listen for this client and will be waiting (blocking I/O)
+
+// BOILER PLATE for non-blocking
+bool set_nonblocking(int sockfd){
+    // 1.  Get current file status flags
+    int flags = fcntl(sockfd, F_GETFL, 0);
+    if(flags == -1){
+        return false;
+    }
+    
+    // 2. Add the non-blocking flag using bitwise OR
+    flags = flags | O_NONBLOCK;
+
+    if(fcntl(sockfd, F_SETFL, flags) == -1){
+        return false;
+    }
+
+    return true;
+}
 
 std::mutex cout_mutex;
 
@@ -122,21 +144,87 @@ int main(){
 
     std::cout << "Socket connection has started listening on port:" << PORT << "\n";
 
-    // accept request from client, indefinitely
-    while(true){
-        int clientSocket = accept(serverSocket, NULL, NULL);
-
-        if(clientSocket == -1){
-            std::cerr << "client socket invalid" << "\n";
-            return 1;
-        }
-
-        // 4 steps completed- create, bind, listen, accept
-
-        // spawn a worker thread to serve the client so main thread can receive another request
-        std::thread(serveClient, clientSocket).detach();
+    // --- Non-blocking code changes ---
+    
+    // 1. Create epoll instance in kernal
+    int epoll_fd = epoll_create1(0);
+    if(epoll_fd == -1){
+        std::cerr << "Failed to create epoll file descriptor\n";
+        close(serverSocket);
+        return 1;
     }
 
+    std::cout << "Epoll instance created successfully!\n";
+
+    // 2. Make Server socket non-blocking
+    if(!set_nonblocking(serverSocket)){
+        std::cerr << "Failed to set server socket to non-blocking\n";
+        close(serverSocket);
+        return 1;
+    }
+
+    // 3. Register server socket with epoll
+    struct epoll_event event;
+    event.events = EPOLLIN; // We want to know when there is INcoming data (a new connection)
+    event.data.fd = serverSocket; // This is the socket we are registering
+
+    // epoll_ctl adds, modifies, or deletes sockets from the epoll instance
+    if(epoll_ctl(epoll_fd, EPOLL_CTL_ADD, serverSocket, &event) == -1){
+        std::cerr << "Failed to add server socket to epoll\n";
+        close(serverSocket);
+        return 1;
+    }
+
+    // 4. Reactor event loop
+    const int MAX_EVENTS = 10; // Maximum number of events to process at once
+    struct epoll_event events[MAX_EVENTS]; // Array to hold the events that just happened
+    
+    std::cout << "Reactor loop starting. Waiting for events...\n";
+
+
+    // accept request from client, indefinitely
+    while(true){
+        // This will block the thread until AT LEAST one event happens.
+        // '-1' means "wait indefinitely" (no timeout).
+        int num_events = epoll_wait(epoll_fd, events, MAX_EVENTS, -1);
+
+        if(num_events == -1){
+            std::cerr << "epoll_wait error\n";
+            break;
+        }
+        
+        // Using epoll_wait instead of accept
+        // int clientSocket = accept(serverSocket, NULL, NULL);
+        // if(clientSocket == -1){
+        //     std::cerr << "client socket invalid" << "\n";
+        //     return 1;
+        // }
+
+        // 4 steps completed- create, bind, listen, accept (epoll_wait)
+
+        // old blocking code
+        // // spawn a worker thread to serve the client so main thread can receive another request
+        // std::thread(serveClient, clientSocket).detach();
+
+        // loop through all socket that kernel says are ready
+        for(int i = 0;i < num_events; i++){
+            // CASE 1: socket that triggered event is our main listening socket
+            // This means a new client is trying to connect
+            if(events[i].data.fd == serverSocket){
+                std::cout << "[EVENT] New connection attempt detected on server socket!\n";
+
+                // Handling this later, 
+                int temp_client = accept(serverSocket, NULL, NULL);
+                close(temp_client); 
+            }
+
+            // CASE 2: socket that triggered event is a connected client socket, this means a client sent us data
+            else{
+                std::cout << "[EVENT] data arrived on a client socket\n";
+            }
+        }
+    }
 
     close(serverSocket);
+    return 0;
 }
