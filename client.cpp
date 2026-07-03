@@ -11,25 +11,17 @@
 
 #include <iostream>
 
-#include <WinSock2.h>
-#include <WinDef.h>
-#include <WS2tcpip.h>
-#include <tchar.h>
-
-bool initializeWinsock(){
-    WSADATA wsa;
-    int startup = WSAStartup(MAKEWORD(2,2), &wsa);
-
-    if(startup != 0) return false; //
-    return true;
-}
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <unistd.h>
+#include <cstring>
+#include <errno.h>
 
 int main(){
-    initializeWinsock();
+    int clientSocket = socket(AF_INET, SOCK_STREAM, 0);
 
-    SOCKET clientSocket = socket(AF_INET, SOCK_STREAM, 0);
-
-    if(clientSocket == SOCKET_ERROR){
+    if(clientSocket == -1){
         std::cerr << "socket initialization failed\n";
         return 1;
     }
@@ -40,17 +32,16 @@ int main(){
     serverAddress.sin_port = htons(PORT);
 
 
-    if(InetPton(AF_INET, _T("0.0.0.0"), &serverAddress.sin_addr) != 1){
+    if(inet_pton(AF_INET, ("127.0.0.1"), &serverAddress.sin_addr) != 1){
         std::cerr << "setting socket address structure failed" << "\n";
         return 1;
     }
 
     int serverConnect = connect(clientSocket, reinterpret_cast<sockaddr*>(&serverAddress), sizeof serverAddress);
 
-    if(serverConnect == SOCKET_ERROR){
+    if(serverConnect == -1){
         std::cerr << "Server connection failed\n";
-        closesocket(clientSocket);
-        WSACleanup();
+        close(clientSocket);
         return 1;
     }
 
@@ -61,10 +52,28 @@ int main(){
 
     int dataSent = send(clientSocket, message.c_str(), message.size(), 0); 
 
-    if(dataSent == SOCKET_ERROR){
+    if(dataSent == -1){
         std::cerr << "data not sent successfully\n";
-        closesocket(clientSocket);
-        WSACleanup();
+        close(clientSocket);
         return 1;
-    } 
+    }
+
+    char buffer[4096];
+    int bytesReceived = recv(clientSocket, buffer, sizeof(buffer) - 1, 0);
+    if (bytesReceived > 0) {
+        buffer[bytesReceived] = '\0';
+        std::cout << "Server response: " << buffer << std::endl;
+    }
+
+    message = "another Message";
+    std::cout << "Sending second message..." << std::endl;
+    send(clientSocket, message.c_str(), message.length(), 0);
+
+    bytesReceived = recv(clientSocket, buffer, sizeof(buffer) - 1, 0);
+    if (bytesReceived > 0) {
+        buffer[bytesReceived] = '\0';
+        std::cout << "Server response: " << buffer << std::endl;
+    }
+
+    close(clientSocket);
 }
