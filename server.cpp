@@ -213,14 +213,58 @@ int main(){
             if(events[i].data.fd == serverSocket){
                 std::cout << "[EVENT] New connection attempt detected on server socket!\n";
 
-                // Handling this later, 
-                int temp_client = accept(serverSocket, NULL, NULL);
-                close(temp_client); 
+                // Handling this later, accept for now so is does not spam
+                int client_socket = accept(serverSocket, NULL, NULL);
+                if(client_socket == -1){
+                    std::cerr << "client socket Accept failed\n";
+                    continue;
+                } 
+
+                // 1. make the new client non-blocking
+                int flags = fcntl(client_socket, F_GETFL, 0);
+                fcntl(client_socket, F_SETFL, flags | O_NONBLOCK);
+
+                // 2. register the client with epoll
+                struct epoll_event client_event;
+                client_event.events = EPOLLIN;
+                client_event.data.fd = client_socket;
+
+                if(epoll_ctl(epoll_fd, EPOLL_CTL_ADD, client_socket, &client_event) == -1){
+                    std::cerr << "Failed to add client to epoll\n";
+                    close(client_socket);
+                }
+                else {
+                    std::cout << "[EVENT] New client connected and registered with epoll! FD: " << client_socket << "\n";
+                }
             }
 
             // CASE 2: socket that triggered event is a connected client socket, this means a client sent us data
             else{
                 std::cout << "[EVENT] data arrived on a client socket\n";
+
+                int clientFd = events[i].data.fd;
+                char buffer[4096];
+
+                // Read the data (non-blocking)
+                int bytesReceived = recv(clientFd, buffer, sizeof(buffer), 0);
+
+                if(bytesReceived > 0){
+                    std::string clientMessage(buffer, bytesReceived); 
+                    std::cout << "[EVENT] Data from FD " << clientFd << ": " << clientMessage << "\n";
+                    
+                    // Echo response back
+                    std::string response = "Message received by Reactor.";
+                    send(clientFd, response.c_str(), response.size(), 0);
+                } 
+                else if(bytesReceived == 0){
+                    std::cout << "[EVENT] Client on FD " << clientFd << " disconnected.\n";
+                    close(clientFd); // Automatically removes from epoll
+                } 
+                else {
+                    // bytesReceived == -1 implies an error (like connection reset)
+                    std::cerr << "[EVENT] Error on FD " << clientFd << "\n";
+                    close(clientFd);
+                }
             }
         }
     }
