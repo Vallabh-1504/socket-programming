@@ -196,19 +196,6 @@ int main(){
             std::cerr << "epoll_wait error\n";
             break;
         }
-        
-        // Using epoll_wait instead of accept
-        // int clientSocket = accept(serverSocket, NULL, NULL);
-        // if(clientSocket == -1){
-        //     std::cerr << "client socket invalid" << "\n";
-        //     return 1;
-        // }
-
-        // 4 steps completed- create, bind, listen, accept (epoll_wait)
-
-        // old blocking code
-        // // spawn a worker thread to serve the client so main thread can receive another request
-        // std::thread(serveClient, clientSocket).detach();
 
         // loop through all socket that kernel says are ready
         for(int i = 0;i < num_events; i++){
@@ -268,7 +255,14 @@ int main(){
                             std::cout << "[EVENT] Data from FD " << clientFd << ": " << clientMessage << "\n";
                             
                             // Echo response back
-                            std::string response = "Message received by Reactor.";
+                            // std::string response = "Message received by Reactor.";
+                            std::string response = 
+                                "HTTP/1.1 200 OK\r\n"
+                                "Content-Type: text/plain\r\n"
+                                "Content-Length: 13\r\n"
+                                "Connection: keep-alive\r\n"
+                                "\r\n"
+                                "Hello, World!";
 
                             int bytes_sent = send(clientFd, response.c_str(), response.size(), 0);
 
