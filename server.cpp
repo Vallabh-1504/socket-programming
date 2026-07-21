@@ -183,8 +183,8 @@ int main(){
     
     std::cout << "Reactor loop starting. Waiting for events...\n";
 
-        // non-blocking SEND: use a map to keep track of unsent data corresponding to the FD
-        std::unordered_map<int, std::string> write_buffer;
+    // non-blocking SEND: use a map to keep track of unsent data corresponding to the FD
+    std::unordered_map<int, std::string> write_buffer;
 
     // accept request from client, indefinitely
     while(true){
@@ -204,29 +204,46 @@ int main(){
             if(events[i].data.fd == serverSocket){
                 std::cout << "[EVENT] New connection attempt detected on server socket!\n";
 
-                // Handling this later, accept for now so is does not spam
-                int client_socket = accept(serverSocket, NULL, NULL);
-                if(client_socket == -1){
-                    std::cerr << "client socket Accept failed\n";
-                    continue;
-                } 
+                while(true){
+                    struct sockaddr_in client_addr;
+                    socklen_t client_len = sizeof(client_addr);
+                    int client_socket = accept(serverSocket, (struct sockaddr*)&client_addr, &client_len);
 
-                // 1. make the new client non-blocking
-                int flags = fcntl(client_socket, F_GETFL, 0);
-                fcntl(client_socket, F_SETFL, flags | O_NONBLOCK);
+                    if(client_socket == -1){
+                        // EAGAIN or EWOULDBLOCK means the backlog is completely empty
+                        if(errno == EAGAIN || errno == EWOULDBLOCK) {
+                            break; // Successfully processed all pending connections
+                        }
+                        else{
+                            // A genuine error occurred during accept
+                            std::cerr << "[ERROR] Accept failed: " << strerror(errno) << "\n";
+                            break;
+                        }
+                    }
 
-                // 2. register the client with epoll
-                struct epoll_event client_event;
-                client_event.events = EPOLLIN | EPOLLET;
-                client_event.data.fd = client_socket;
+                    // 1. Make the newly accepted socket non-blocking
+                    int flags = fcntl(client_socket, F_GETFL, 0);
+                    if(flags == -1){
+                        close(client_socket);
+                        continue;
+                    }
+                    if(fcntl(client_socket, F_SETFL, flags | O_NONBLOCK) == -1){
+                        close(client_socket);
+                        continue;
+                    }
 
-                if(epoll_ctl(epoll_fd, EPOLL_CTL_ADD, client_socket, &client_event) == -1){
-                    std::cerr << "Failed to add client to epoll\n";
-                    close(client_socket);
+                    // 2. Register the new client socket with epoll (Edge-Triggered)
+                    struct epoll_event client_event;
+                    client_event.events = EPOLLIN | EPOLLOUT | EPOLLET;
+                    client_event.data.fd = client_socket;
+                    
+                    if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, client_socket, &client_event) == -1) {
+                        std::cerr << "[ERROR] epoll_ctl failed for new client FD " << client_socket << "\n";
+                        close(client_socket);
+                    }
                 }
-                else {
-                    std::cout << "[EVENT] New client connected and registered with epoll! FD: " << client_socket << "\n";
-                }
+
+                continue;
             }
 
             // CASE 2: socket that triggered event is a connected client socket, this means a client sent us data
@@ -238,7 +255,8 @@ int main(){
                 if (events[i].events & (EPOLLERR | EPOLLHUP)) {
                     std::cerr << "[EVENT] Connection dropped or epoll error on FD " << clientFd << "\n";
                     write_buffer.erase(clientFd); // Clean state
-                    close(clientFd);
+                    epoll_ctl(epoll_fd, EPOLL_CTL_DEL, clientFd, NULL); // Explicitly remove from epoll
+                    close(clientFd); // Then close the FD
                     continue; // Skip the read/write checks and go to the next event
                 }
 
@@ -284,8 +302,9 @@ int main(){
                         else if(bytesReceived == 0){
                             std::cout << "[EVENT] Client on FD " << clientFd << " disconnected.\n";
                             write_buffer.erase(clientFd); // Clean up the state!
+                            // epoll_ctl(epoll_fd, EPOLL_CTL_DEL, clientFd, NULL); // Not strictly necessary, close() does it
                             close(clientFd); // Automatically removes from epoll
-                            break;
+                            goto next_event; // Exit processing for this FD
                         } 
                         else {
                             // ET check, when buffer is drained, we get -1 and errno EAGAIn
@@ -297,8 +316,9 @@ int main(){
                                 // a real error occured
                                 std::cerr << "[EVENT] Error on FD " << clientFd << "\n";
                                 write_buffer.erase(clientFd); // Clean up the state!
+                                // epoll_ctl(epoll_fd, EPOLL_CTL_DEL, clientFd, NULL);
                                 close(clientFd);
-                                break; // FATAL missing
+                                goto next_event; // Exit processing for this FD
                             }
                         }
                     }
@@ -325,6 +345,7 @@ int main(){
                     }
                 }
             }
+            next_event:; // Label for goto to jump to the next event
         }
     }
 
