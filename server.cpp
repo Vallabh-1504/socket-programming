@@ -248,6 +248,13 @@ int main(){
 
                 int clientFd = events[i].data.fd;
 
+                if (events[i].events & (EPOLLERR | EPOLLHUP)) {
+                    std::cerr << "[EVENT] Connection dropped or epoll error on FD " << clientFd << "\n";
+                    write_buffer.erase(clientFd); // Clean state
+                    close(clientFd);
+                    continue; // Skip the read/write checks and go to the next event
+                }
+
                 // READ readiness (EPOLLIN)
                 if(events[i].events & EPOLLIN){
                     char buffer[4096];
@@ -297,6 +304,7 @@ int main(){
                                 std::cerr << "[EVENT] Error on FD " << clientFd << "\n";
                                 write_buffer.erase(clientFd); // Clean up the state!
                                 close(clientFd);
+                                break; // FATAL missing
                             }
                         }
                     }
