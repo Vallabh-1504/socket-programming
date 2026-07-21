@@ -226,7 +226,7 @@ int main(){
 
                 // 2. register the client with epoll
                 struct epoll_event client_event;
-                client_event.events = EPOLLIN;
+                client_event.events = EPOLLIN | EPOLLET;
                 client_event.data.fd = client_socket;
 
                 if(epoll_ctl(epoll_fd, EPOLL_CTL_ADD, client_socket, &client_event) == -1){
@@ -245,25 +245,34 @@ int main(){
                 int clientFd = events[i].data.fd;
                 char buffer[4096];
 
-                // Read the data (non-blocking)
-                int bytesReceived = recv(clientFd, buffer, sizeof(buffer), 0);
+                // Read the data (non-blocking) until EAGAIN is returned
+                while(true){
+                    int bytesReceived = recv(clientFd, buffer, sizeof(buffer), 0);
 
-                if(bytesReceived > 0){
-                    std::string clientMessage(buffer, bytesReceived); 
-                    std::cout << "[EVENT] Data from FD " << clientFd << ": " << clientMessage << "\n";
-                    
-                    // Echo response back
-                    std::string response = "Message received by Reactor.";
-                    send(clientFd, response.c_str(), response.size(), 0);
-                } 
-                else if(bytesReceived == 0){
-                    std::cout << "[EVENT] Client on FD " << clientFd << " disconnected.\n";
-                    close(clientFd); // Automatically removes from epoll
-                } 
-                else {
-                    // bytesReceived == -1 implies an error (like connection reset)
-                    std::cerr << "[EVENT] Error on FD " << clientFd << "\n";
-                    close(clientFd);
+                    if(bytesReceived > 0){
+                        std::string clientMessage(buffer, bytesReceived); 
+                        std::cout << "[EVENT] Data from FD " << clientFd << ": " << clientMessage << "\n";
+                        
+                        // Echo response back
+                        std::string response = "Message received by Reactor.";
+                        send(clientFd, response.c_str(), response.size(), 0);
+                    } 
+                    else if(bytesReceived == 0){
+                        std::cout << "[EVENT] Client on FD " << clientFd << " disconnected.\n";
+                        close(clientFd); // Automatically removes from epoll
+                    } 
+                    else {
+                        // ET check, when buffer is drained, we get -1 and errno EAGAIn
+                        if(errno == EAGAIN || errno == EWOULDBLOCK){
+                            // Buffer is empty. Break the read loop and go back to epoll_wait
+                            break;
+                        }
+                        else{
+                            // a real error occured
+                            std::cerr << "[EVENT] Error on FD " << clientFd << "\n";
+                            close(clientFd);
+                        }
+                    }
                 }
             }
         }
