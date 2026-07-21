@@ -1,5 +1,7 @@
 #include <iostream>
+
 #include <string>
+#include <unordered_map>
 
 #include <thread>
 #include <mutex>
@@ -181,6 +183,8 @@ int main(){
     
     std::cout << "Reactor loop starting. Waiting for events...\n";
 
+        // non-blocking SEND: use a map to keep track of unsent data corresponding to the FD
+        std::unordered_map<int, std::string> write_buffer;
 
     // accept request from client, indefinitely
     while(true){
@@ -243,35 +247,79 @@ int main(){
                 std::cout << "[EVENT] data arrived on a client socket\n";
 
                 int clientFd = events[i].data.fd;
-                char buffer[4096];
 
-                // Read the data (non-blocking) until EAGAIN is returned
-                while(true){
-                    int bytesReceived = recv(clientFd, buffer, sizeof(buffer), 0);
+                // READ readiness (EPOLLIN)
+                if(events[i].events & EPOLLIN){
+                    char buffer[4096];
 
-                    if(bytesReceived > 0){
-                        std::string clientMessage(buffer, bytesReceived); 
-                        std::cout << "[EVENT] Data from FD " << clientFd << ": " << clientMessage << "\n";
-                        
-                        // Echo response back
-                        std::string response = "Message received by Reactor.";
-                        send(clientFd, response.c_str(), response.size(), 0);
-                    } 
-                    else if(bytesReceived == 0){
-                        std::cout << "[EVENT] Client on FD " << clientFd << " disconnected.\n";
-                        close(clientFd); // Automatically removes from epoll
-                    } 
-                    else {
-                        // ET check, when buffer is drained, we get -1 and errno EAGAIn
-                        if(errno == EAGAIN || errno == EWOULDBLOCK){
-                            // Buffer is empty. Break the read loop and go back to epoll_wait
+                    // Read the data (non-blocking) until EAGAIN is returned
+                    while(true){
+                        int bytesReceived = recv(clientFd, buffer, sizeof(buffer), 0);
+
+                        if(bytesReceived > 0){
+                            std::string clientMessage(buffer, bytesReceived); 
+                            std::cout << "[EVENT] Data from FD " << clientFd << ": " << clientMessage << "\n";
+                            
+                            // Echo response back
+                            std::string response = "Message received by Reactor.";
+
+                            int bytes_sent = send(clientFd, response.c_str(), response.size(), 0);
+
+                            if (bytes_sent < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+                                bytes_sent = 0; // The OS buffer is completely full
+                            }
+
+                            if (bytes_sent >= 0 && bytes_sent < response.size()) {
+                                // We couldn't send everything. Buffer the remainder.
+                                write_buffer[clientFd] += response.substr(bytes_sent);
+                                
+                                // Tell epoll to wake us up when the socket is ready to write
+                                struct epoll_event ev;
+                                ev.events = EPOLLIN | EPOLLOUT | EPOLLET;
+                                ev.data.fd = clientFd;
+                                epoll_ctl(epoll_fd, EPOLL_CTL_MOD, clientFd, &ev);
+                            }
+                        } 
+                        else if(bytesReceived == 0){
+                            std::cout << "[EVENT] Client on FD " << clientFd << " disconnected.\n";
+                            write_buffer.erase(clientFd); // Clean up the state!
+                            close(clientFd); // Automatically removes from epoll
                             break;
+                        } 
+                        else {
+                            // ET check, when buffer is drained, we get -1 and errno EAGAIn
+                            if(errno == EAGAIN || errno == EWOULDBLOCK){
+                                // Buffer is empty. Break the read loop and go back to epoll_wait
+                                break;
+                            }
+                            else{
+                                // a real error occured
+                                std::cerr << "[EVENT] Error on FD " << clientFd << "\n";
+                                write_buffer.erase(clientFd); // Clean up the state!
+                                close(clientFd);
+                            }
                         }
-                        else{
-                            // a real error occured
-                            std::cerr << "[EVENT] Error on FD " << clientFd << "\n";
-                            close(clientFd);
+                    }
+                }
+
+                // WRITE READINESS (EPOLLOUT)
+                if(events[i].events & EPOLLOUT){
+                    std::string &pending_data = write_buffer[clientFd];
+
+                    if(!pending_data.empty()){
+                        int bytes_sent = send(clientFd, pending_data.c_str(), pending_data.size(), 0);
+
+                        if(bytes_sent > 0){
+                            // remove bytes we successfully sent
+                            pending_data.erase(0, bytes_sent);
                         }
+                    }
+
+                    if(pending_data.empty()){
+                        struct epoll_event ev;
+                        ev.events = EPOLLIN | EPOLLET;
+                        ev.data.fd = clientFd;
+                        epoll_ctl(epoll_fd, EPOLL_CTL_MOD, clientFd, &ev);
                     }
                 }
             }
