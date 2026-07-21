@@ -62,7 +62,7 @@ bool set_nonblocking(int sockfd){
 std::mutex cout_mutex;
 
 void serveClient(int clientSocket){
-    std::cout << "client connected Successfully\n";
+    // std::cout << "client connected Successfully\n";
 
     // receive the request from clientSocket after accepting request
     // receive the request indefinitely
@@ -88,7 +88,7 @@ void serveClient(int clientSocket){
         std::string clientMessage(buffer, dataReceived); 
         {
             std::lock_guard<std::mutex> lock(cout_mutex);
-            std::cout << "Message received from client: " << clientMessage << "\n";
+            // std::cout << "Message received from client: " << clientMessage << "\n";
         }
 
         // Send a response back to the client
@@ -134,7 +134,7 @@ int main(){
         return 1;
     }
 
-    std::cout << "Socket connection successfully established" << "\n";
+    // std::cout << "Socket connection successfully established" << "\n";
 
     // listen on the connection
     int listenSocket = listen(serverSocket, SOMAXCONN);
@@ -144,7 +144,7 @@ int main(){
         return 1;
     }
 
-    std::cout << "Socket connection has started listening on port:" << PORT << "\n";
+    // std::cout << "Socket connection has started listening on port:" << PORT << "\n";
 
     // --- Non-blocking code changes ---
     
@@ -156,7 +156,7 @@ int main(){
         return 1;
     }
 
-    std::cout << "Epoll instance created successfully!\n";
+    // std::cout << "Epoll instance created successfully!\n";
 
     // 2. Make Server socket non-blocking
     if(!set_nonblocking(serverSocket)){
@@ -181,7 +181,7 @@ int main(){
     const int MAX_EVENTS = 10; // Maximum number of events to process at once
     struct epoll_event events[MAX_EVENTS]; // Array to hold the events that just happened
     
-    std::cout << "Reactor loop starting. Waiting for events...\n";
+    // std::cout << "Reactor loop starting. Waiting for events...\n";
 
     // non-blocking SEND: use a map to keep track of unsent data corresponding to the FD
     std::unordered_map<int, std::string> write_buffer;
@@ -202,7 +202,7 @@ int main(){
             // CASE 1: socket that triggered event is our main listening socket
             // This means a new client is trying to connect
             if(events[i].data.fd == serverSocket){
-                std::cout << "[EVENT] New connection attempt detected on server socket!\n";
+                // std::cout << "[EVENT] New connection attempt detected on server socket!\n";
 
                 while(true){
                     struct sockaddr_in client_addr;
@@ -248,7 +248,7 @@ int main(){
 
             // CASE 2: socket that triggered event is a connected client socket, this means a client sent us data
             else{
-                std::cout << "[EVENT] data arrived on a client socket\n";
+                // std::cout << "[EVENT] data arrived on a client socket\n";
 
                 int clientFd = events[i].data.fd;
 
@@ -270,7 +270,7 @@ int main(){
 
                         if(bytesReceived > 0){
                             std::string clientMessage(buffer, bytesReceived); 
-                            std::cout << "[EVENT] Data from FD " << clientFd << ": " << clientMessage << "\n";
+                            // std::cout << "[EVENT] Data from FD " << clientFd << ": " << clientMessage << "\n";
                             
                             // Echo response back
                             // std::string response = "Message received by Reactor.";
@@ -300,7 +300,7 @@ int main(){
                             }
                         } 
                         else if(bytesReceived == 0){
-                            std::cout << "[EVENT] Client on FD " << clientFd << " disconnected.\n";
+                            // std::cout << "[EVENT] Client on FD " << clientFd << " disconnected.\n";
                             write_buffer.erase(clientFd); // Clean up the state!
                             // epoll_ctl(epoll_fd, EPOLL_CTL_DEL, clientFd, NULL); // Not strictly necessary, close() does it
                             close(clientFd); // Automatically removes from epoll
